@@ -1,6 +1,8 @@
 import numpy as np
 import jaconv
 import re
+import pickle
+import os
 
 class BPEEncoder_ja:
     def __init__(self, bpe, emoji):
@@ -88,13 +90,33 @@ class BPEEncoder_ja:
         text = ''.join(words)
         return text
 
-
+def _proc(i, array_file, args, enc):
+    from tqdm import tqdm
+    token_chunks = []
+    raw_text = ''
+    for j, (curDir, dirs, files) in enumerate(array_file):
+        if not (j % args.num_process == i):
+            continue
+        print('append #',curDir)
+        for file in tqdm(files):
+            if file.endswith(".txt"):
+                input = os.path.join(curDir, file)
+                with open(input, 'r', encoding='utf-8') as fp:
+                    raw_text += fp.read()
+                raw_text += '<|endoftext|>'
+                if len(raw_text) >= args.combine:
+                    tokens = np.stack(enc.encode(raw_text, clean=args.clean_text))
+                    token_chunks.append(tokens)
+                    raw_text = ''
+        if raw_text and len(raw_text) > 0:
+            tokens = np.stack(enc.encode(raw_text))
+            token_chunks.append(tokens)
+    with open('tmp%d.pkl'%i, 'wb') as f:
+        pickle.dump(token_chunks, f)
+        
 if __name__=='__main__':
     import argparse
-    import os
     import json
-    from tqdm import tqdm
-    import pickle
     from multiprocessing import Pool
     parser = argparse.ArgumentParser()
     parser.add_argument("--src_dir", help="source dir", required=True )
@@ -111,34 +133,12 @@ if __name__=='__main__':
     enc = BPEEncoder_ja(bpe, emoji)
 
     array_file = []
-    def _proc(i):
-        token_chunks = []
-        raw_text = ''
-        for j, (curDir, dirs, files) in enumerate(array_file):
-            if not (j % args.num_process == i):
-                continue
-            print('append #',curDir)
-            for file in tqdm(files):
-                if file.endswith(".txt"):
-                    input = os.path.join(curDir, file)
-                    with open(input, 'r', encoding='utf-8') as fp:
-                        raw_text += fp.read()
-                    raw_text += '<|endoftext|>'
-                    if len(raw_text) >= args.combine:
-                        tokens = np.stack(enc.encode(raw_text, clean=args.clean_text))
-                        token_chunks.append(tokens)
-                        raw_text = ''
-            if raw_text and len(raw_text) > 0:
-                tokens = np.stack(enc.encode(raw_text))
-                token_chunks.append(tokens)
-        with open('tmp%d.pkl'%i, 'wb') as f:
-            pickle.dump(token_chunks, f)
 
     for curDir, dirs, files in os.walk(args.src_dir):
         array_file.append((curDir, dirs, files))
 
     with Pool(args.num_process) as p:
-        p.map(_proc, list(range(args.num_process)))
+        p.starmap(_proc, [(i, array_file, args, enc) for i in range(args.num_process)])
 
     token_chunks = []
     for i in range(args.num_process):
